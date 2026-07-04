@@ -12385,23 +12385,23 @@ function deriveScopeId(workdir) {
   const suffix = fnv1a64Hex(normalized).slice(0, 12);
   return `${base}-${suffix}`;
 }
-function scopeDir(scopeId) {
-  return join(SCOPES_DIR, scopeId);
+function scopeDir(scopeId, root = SCOPES_DIR) {
+  return join(root, scopeId);
 }
-function scopeJobsDir(scopeId) {
-  return join(scopeDir(scopeId), "jobs");
+function scopeJobsDir(scopeId, root = SCOPES_DIR) {
+  return join(scopeDir(scopeId, root), "jobs");
 }
-function scopeLocksDir(scopeId) {
-  return join(scopeDir(scopeId), "locks");
+function scopeLocksDir(scopeId, root = SCOPES_DIR) {
+  return join(scopeDir(scopeId, root), "locks");
 }
-function scopeRunsDir(scopeId) {
-  return join(scopeDir(scopeId), "runs");
+function scopeRunsDir(scopeId, root = SCOPES_DIR) {
+  return join(scopeDir(scopeId, root), "runs");
 }
 function scopeLogsDir(scopeId) {
   return join(LOGS_DIR, "scheduler", scopeId);
 }
-function jobFilePath(scopeId, slug) {
-  return join(scopeJobsDir(scopeId), `${slug}.json`);
+function jobFilePath(scopeId, slug, root = SCOPES_DIR) {
+  return join(scopeJobsDir(scopeId, root), `${slug}.json`);
 }
 function scopedLogPath(scopeId, slug) {
   return join(scopeLogsDir(scopeId), `${slug}.log`);
@@ -13514,24 +13514,24 @@ function uninstallJob(job) {
   }
   uninstallCronJob(job);
 }
-function ensureScopeStorage(scopeId) {
+function ensureScopeStorage(scopeId, root = SCOPES_DIR) {
   ensureDir(SCHEDULER_DIR);
-  ensureDir(SCOPES_DIR);
-  const dir = scopeDir(scopeId);
+  ensureDir(root);
+  const dir = scopeDir(scopeId, root);
   try {
     if (!existsSync(dir) || !statSync(dir).isDirectory())
       return;
   } catch {
     return;
   }
-  ensureDir(scopeJobsDir(scopeId));
-  ensureDir(scopeLocksDir(scopeId));
-  ensureDir(scopeRunsDir(scopeId));
+  ensureDir(scopeJobsDir(scopeId, root));
+  ensureDir(scopeLocksDir(scopeId, root));
+  ensureDir(scopeRunsDir(scopeId, root));
   ensureDir(scopeLogsDir(scopeId));
 }
-function loadScopedJob(scopeId, slug) {
-  ensureScopeStorage(scopeId);
-  const path = jobFilePath(scopeId, slug);
+function loadScopedJob(scopeId, slug, root = SCOPES_DIR) {
+  ensureScopeStorage(scopeId, root);
+  const path = jobFilePath(scopeId, slug, root);
   if (!existsSync(path))
     return null;
   try {
@@ -13540,12 +13540,15 @@ function loadScopedJob(scopeId, slug) {
     return null;
   }
 }
-function loadAllScopedJobs(scopeId) {
-  ensureScopeStorage(scopeId);
-  const files = readdirSync(scopeJobsDir(scopeId)).filter((f) => f.endsWith(".json"));
+function loadAllScopedJobs(scopeId, root = SCOPES_DIR) {
+  ensureScopeStorage(scopeId, root);
+  const jobsDir = scopeJobsDir(scopeId, root);
+  if (!existsSync(jobsDir))
+    return [];
+  const files = readdirSync(jobsDir).filter((f) => f.endsWith(".json"));
   return files.map((f) => {
     try {
-      return normalizeJob(JSON.parse(readFileSync(join(scopeJobsDir(scopeId), f), "utf-8")));
+      return normalizeJob(JSON.parse(readFileSync(join(jobsDir, f), "utf-8")));
     } catch {
       return null;
     }
@@ -13559,11 +13562,11 @@ function listScopeIds(root = SCOPES_DIR) {
     return [];
   }
 }
-function loadAllJobsAcrossScopes() {
-  const scopeIds = listScopeIds();
+function loadAllJobsAcrossScopes(root = SCOPES_DIR) {
+  const scopeIds = listScopeIds(root);
   const out = [];
   for (const scopeId of scopeIds) {
-    out.push(...loadAllScopedJobs(scopeId));
+    out.push(...loadAllScopedJobs(scopeId, root));
   }
   return out;
 }
@@ -13872,6 +13875,39 @@ function getJobRun(job) {
     attachUrl: job.attachUrl
   };
 }
+function optionalStringOverride(value) {
+  if (value === undefined)
+    return;
+  return value.trim() ? value : undefined;
+}
+function mergeRunOverride(baseRun, override) {
+  const merged = { ...baseRun };
+  const assignString = (key) => {
+    const value = optionalStringOverride(override[key]);
+    if (value !== undefined) {
+      merged[key] = value;
+    }
+  };
+  assignString("prompt");
+  assignString("command");
+  assignString("arguments");
+  assignString("agent");
+  assignString("model");
+  assignString("variant");
+  assignString("title");
+  assignString("session");
+  assignString("runFormat");
+  assignString("attachUrl");
+  if (override.files !== undefined)
+    merged.files = override.files;
+  if (override.share !== undefined)
+    merged.share = override.share;
+  if (override.continue !== undefined)
+    merged.continue = override.continue;
+  if (override.port !== undefined && override.port > 0)
+    merged.port = override.port;
+  return merged;
+}
 function sanitizeJob(job) {
   const sanitized = { ...job };
   if (typeof sanitized.workdir === "string") {
@@ -14007,17 +14043,18 @@ function normalizeJob(raw) {
 }
 function findJobByName(name, options) {
   const scopeId = options?.scopeId ?? currentScopeId();
+  const scopesRoot = options?.scopesRoot ?? SCOPES_DIR;
   const slug = slugify(name);
-  let job = loadScopedJob(scopeId, slug) || loadScopedJob(scopeId, name);
+  let job = loadScopedJob(scopeId, slug, scopesRoot) || loadScopedJob(scopeId, name, scopesRoot);
   if (!job) {
-    const allJobs = loadAllScopedJobs(scopeId);
+    const allJobs = loadAllScopedJobs(scopeId, scopesRoot);
     job = allJobs.find((j) => j.slug === name || j.slug.endsWith(`-${slug}`) || j.name.toLowerCase() === name.toLowerCase() || j.name.toLowerCase().includes(name.toLowerCase())) || null;
   }
-  if (!job && options?.allScopes) {
-    const allJobs = loadAllJobsAcrossScopes();
+  if (!job && options?.allScopes !== false) {
+    const allJobs = loadAllJobsAcrossScopes(scopesRoot);
     job = allJobs.find((j) => j.slug === name || j.slug.endsWith(`-${slug}`) || j.name.toLowerCase() === name.toLowerCase() || j.name.toLowerCase().includes(name.toLowerCase())) || null;
   }
-  if (!job && options?.includeLegacy) {
+  if (!job && options?.includeLegacy !== false) {
     job = loadLegacyJob(slug) || loadLegacyJob(name);
     if (!job) {
       const allJobs = loadAllLegacyJobs();
@@ -14470,6 +14507,7 @@ var SchedulerPlugin = async () => {
             const platformName = backend;
             const reliabilityLine = backend === "schtasks" ? "Windows note: scheduled runs use Task Scheduler directly. For advanced reliability guarantees, prefer simple cron schedules or split complex jobs." : backend === "cron" ? "Cron note: missed runs during sleep are not replayed. For catch-up behavior, use launchd or systemd when available." : "The job will run at the scheduled time. If your computer was asleep, it will catch up when it wakes.";
             const primaryLine = run.command ? `Command: ${run.command}${run.arguments ? ` ${run.arguments}` : ""}` : `Prompt: ${(run.prompt ?? "").slice(0, 100)}${(run.prompt ?? "").length > 100 ? "..." : ""}`;
+            const commandName = slug === args.name ? args.name : slug;
             const attachLine = run.attachUrl ? `Attach URL: ${run.attachUrl}
 ` : "";
             return okResult(format, `Scheduled "${args.name}"
@@ -14482,9 +14520,9 @@ ${attachLine}${primaryLine}
 ${reliabilityLine}
 
 Commands:
-- "run ${args.name} now" - run immediately
+- "run ${commandName} now" - run immediately
 - "show my jobs" - list all
-- "delete job ${args.name}" - remove`, { job });
+- "delete job ${commandName}" - remove`, { job });
           } catch (error45) {
             deleteJobFile(job);
             const msg = error45 instanceof Error ? error45.message : String(error45);
@@ -14694,23 +14732,22 @@ ${content.trim()}
               return {};
             }
           })();
-          const nextRunCandidate = {
-            ...currentRun,
-            prompt: args.prompt !== undefined ? args.prompt : currentRun.prompt,
-            command: args.command !== undefined ? args.command : currentRun.command,
-            arguments: args.arguments !== undefined ? args.arguments : currentRun.arguments,
-            files: args.files !== undefined ? parseFiles(args.files) : currentRun.files,
-            agent: args.agent !== undefined ? args.agent : currentRun.agent,
-            model: args.model !== undefined ? args.model : currentRun.model,
-            variant: args.variant !== undefined ? args.variant : currentRun.variant,
-            title: args.title !== undefined ? args.title : currentRun.title,
-            share: args.share !== undefined ? args.share : currentRun.share,
-            continue: args.continue !== undefined ? args.continue : currentRun.continue,
-            session: args.session !== undefined ? args.session : currentRun.session,
-            runFormat: args.runFormat !== undefined ? parseRunFormatInput(args.runFormat) : currentRun.runFormat,
-            attachUrl: args.attachUrl !== undefined ? args.attachUrl : currentRun.attachUrl,
-            port: args.port !== undefined ? args.port : currentRun.port
-          };
+          const nextRunCandidate = mergeRunOverride(currentRun, {
+            prompt: args.prompt,
+            command: args.command,
+            arguments: args.arguments,
+            files: args.files !== undefined ? parseFiles(args.files) : undefined,
+            agent: args.agent,
+            model: args.model,
+            variant: args.variant,
+            title: args.title,
+            share: args.share,
+            continue: args.continue,
+            session: args.session,
+            runFormat: args.runFormat !== undefined ? parseRunFormatInput(args.runFormat) : undefined,
+            attachUrl: args.attachUrl,
+            port: args.port
+          });
           try {
             updates.run = normalizeRunSpec(nextRunCandidate);
           } catch (error45) {
@@ -14884,23 +14921,22 @@ ${content.trim()}
               return {};
             }
           })();
-          const overrideCandidate = {
-            ...baseRun,
-            prompt: args.prompt !== undefined ? args.prompt : baseRun.prompt,
-            command: args.command !== undefined ? args.command : baseRun.command,
-            arguments: args.arguments !== undefined ? args.arguments : baseRun.arguments,
-            files: args.files !== undefined ? parseFiles(args.files) : baseRun.files,
-            agent: args.agent !== undefined ? args.agent : baseRun.agent,
-            model: args.model !== undefined ? args.model : baseRun.model,
-            variant: args.variant !== undefined ? args.variant : baseRun.variant,
-            title: args.title !== undefined ? args.title : baseRun.title,
-            share: args.share !== undefined ? args.share : baseRun.share,
-            continue: args.continue !== undefined ? args.continue : baseRun.continue,
-            session: args.session !== undefined ? args.session : baseRun.session,
-            runFormat: args.runFormat !== undefined ? parseRunFormatInput(args.runFormat) : baseRun.runFormat,
-            port: args.port !== undefined ? args.port : baseRun.port,
-            attachUrl: args.attachUrl !== undefined ? args.attachUrl : baseRun.attachUrl
-          };
+          const overrideCandidate = mergeRunOverride(baseRun, {
+            prompt: args.prompt,
+            command: args.command,
+            arguments: args.arguments,
+            files: args.files !== undefined ? parseFiles(args.files) : undefined,
+            agent: args.agent,
+            model: args.model,
+            variant: args.variant,
+            title: args.title,
+            share: args.share,
+            continue: args.continue,
+            session: args.session,
+            runFormat: args.runFormat !== undefined ? parseRunFormatInput(args.runFormat) : undefined,
+            port: args.port,
+            attachUrl: args.attachUrl
+          });
           let runOverride;
           try {
             runOverride = normalizeRunSpec(overrideCandidate);
@@ -14969,7 +15005,9 @@ ${logs}`, { job, logPath, logs });
 };
 var src_default = SchedulerPlugin;
 export {
+  mergeRunOverride,
   listScopeIds,
+  findJobByName,
   src_default as default,
   SchedulerPlugin
 };

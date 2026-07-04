@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"
 
-import { listScopeIds } from "../src/index"
+import { findJobByName, listScopeIds, mergeRunOverride } from "../src/index"
 
 let root: string
 
@@ -70,5 +70,58 @@ describe("listScopeIds", () => {
     writeFileSync(join(root, "stray.txt"), "stray")
 
     expect(() => listScopeIds(root)).not.toThrow()
+  })
+})
+
+describe("findJobByName", () => {
+  test("falls back to jobs stored in another scope", () => {
+    mkdirSync(join(root, "other-scope", "jobs"), { recursive: true })
+    writeFileSync(
+      join(root, "other-scope", "jobs", "nightly.json"),
+      JSON.stringify({
+        scopeId: "other-scope",
+        slug: "nightly",
+        name: "Nightly",
+        schedule: "0 * * * *",
+        prompt: "check",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      })
+    )
+
+    expect(findJobByName("nightly", { scopeId: "missing-scope", scopesRoot: root })?.slug).toBe("nightly")
+  })
+
+  test("finds source-prefixed jobs by display name or actual slug", () => {
+    mkdirSync(join(root, "source-scope", "jobs"), { recursive: true })
+    writeFileSync(
+      join(root, "source-scope", "jobs", "opencode-tracka-baseline1-watchdog.json"),
+      JSON.stringify({
+        scopeId: "source-scope",
+        slug: "opencode-tracka-baseline1-watchdog",
+        name: "tracka-baseline1-watchdog",
+        source: "opencode",
+        schedule: "*/30 * * * *",
+        prompt: "check",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      })
+    )
+
+    expect(findJobByName("tracka-baseline1-watchdog", { scopeId: "missing-scope", scopesRoot: root })?.slug).toBe(
+      "opencode-tracka-baseline1-watchdog"
+    )
+    expect(findJobByName("opencode-tracka-baseline1-watchdog", { scopeId: "missing-scope", scopesRoot: root })?.name).toBe(
+      "tracka-baseline1-watchdog"
+    )
+  })
+})
+
+describe("mergeRunOverride", () => {
+  test("ignores empty string overrides from MCP optional string defaults", () => {
+    const run = mergeRunOverride(
+      { prompt: "original prompt", session: "ses_existing", continue: true },
+      { prompt: "", command: "", session: "", runFormat: "" }
+    )
+
+    expect(run).toEqual({ prompt: "original prompt", session: "ses_existing", continue: true })
   })
 })

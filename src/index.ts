@@ -92,28 +92,28 @@ function deriveScopeId(workdir: string): string {
   return `${base}-${suffix}`
 }
 
-function scopeDir(scopeId: string): string {
-  return join(SCOPES_DIR, scopeId)
+function scopeDir(scopeId: string, root: string = SCOPES_DIR): string {
+  return join(root, scopeId)
 }
 
-function scopeJobsDir(scopeId: string): string {
-  return join(scopeDir(scopeId), "jobs")
+function scopeJobsDir(scopeId: string, root: string = SCOPES_DIR): string {
+  return join(scopeDir(scopeId, root), "jobs")
 }
 
-function scopeLocksDir(scopeId: string): string {
-  return join(scopeDir(scopeId), "locks")
+function scopeLocksDir(scopeId: string, root: string = SCOPES_DIR): string {
+  return join(scopeDir(scopeId, root), "locks")
 }
 
-function scopeRunsDir(scopeId: string): string {
-  return join(scopeDir(scopeId), "runs")
+function scopeRunsDir(scopeId: string, root: string = SCOPES_DIR): string {
+  return join(scopeDir(scopeId, root), "runs")
 }
 
 function scopeLogsDir(scopeId: string): string {
   return join(LOGS_DIR, "scheduler", scopeId)
 }
 
-function jobFilePath(scopeId: string, slug: string): string {
-  return join(scopeJobsDir(scopeId), `${slug}.json`)
+function jobFilePath(scopeId: string, slug: string, root: string = SCOPES_DIR): string {
+  return join(scopeJobsDir(scopeId, root), `${slug}.json`)
 }
 
 function scopedLogPath(scopeId: string, slug: string): string {
@@ -1500,24 +1500,24 @@ function uninstallJob(job: Job): void {
 
 // === JOB STORAGE ===
 
-function ensureScopeStorage(scopeId: string): void {
+function ensureScopeStorage(scopeId: string, root: string = SCOPES_DIR): void {
   ensureDir(SCHEDULER_DIR)
-  ensureDir(SCOPES_DIR)
-  const dir = scopeDir(scopeId)
+  ensureDir(root)
+  const dir = scopeDir(scopeId, root)
   try {
     if (!existsSync(dir) || !statSync(dir).isDirectory()) return
   } catch {
     return
   }
-  ensureDir(scopeJobsDir(scopeId))
-  ensureDir(scopeLocksDir(scopeId))
-  ensureDir(scopeRunsDir(scopeId))
+  ensureDir(scopeJobsDir(scopeId, root))
+  ensureDir(scopeLocksDir(scopeId, root))
+  ensureDir(scopeRunsDir(scopeId, root))
   ensureDir(scopeLogsDir(scopeId))
 }
 
-function loadScopedJob(scopeId: string, slug: string): Job | null {
-  ensureScopeStorage(scopeId)
-  const path = jobFilePath(scopeId, slug)
+function loadScopedJob(scopeId: string, slug: string, root: string = SCOPES_DIR): Job | null {
+  ensureScopeStorage(scopeId, root)
+  const path = jobFilePath(scopeId, slug, root)
   if (!existsSync(path)) return null
   try {
     return normalizeJob(JSON.parse(readFileSync(path, "utf-8")))
@@ -1526,13 +1526,15 @@ function loadScopedJob(scopeId: string, slug: string): Job | null {
   }
 }
 
-function loadAllScopedJobs(scopeId: string): Job[] {
-  ensureScopeStorage(scopeId)
-  const files = readdirSync(scopeJobsDir(scopeId)).filter((f) => f.endsWith(".json"))
+function loadAllScopedJobs(scopeId: string, root: string = SCOPES_DIR): Job[] {
+  ensureScopeStorage(scopeId, root)
+  const jobsDir = scopeJobsDir(scopeId, root)
+  if (!existsSync(jobsDir)) return []
+  const files = readdirSync(jobsDir).filter((f) => f.endsWith(".json"))
   return files
     .map((f) => {
       try {
-        return normalizeJob(JSON.parse(readFileSync(join(scopeJobsDir(scopeId), f), "utf-8")))
+        return normalizeJob(JSON.parse(readFileSync(join(jobsDir, f), "utf-8")))
       } catch {
         return null
       }
@@ -1553,11 +1555,11 @@ export function listScopeIds(root: string = SCOPES_DIR): string[] {
   }
 }
 
-function loadAllJobsAcrossScopes(): Job[] {
-  const scopeIds = listScopeIds()
+function loadAllJobsAcrossScopes(root: string = SCOPES_DIR): Job[] {
+  const scopeIds = listScopeIds(root)
   const out: Job[] = []
   for (const scopeId of scopeIds) {
-    out.push(...loadAllScopedJobs(scopeId))
+    out.push(...loadAllScopedJobs(scopeId, root))
   }
   return out
 }
@@ -1957,6 +1959,41 @@ function getJobRun(job: Job): JobRunSpec {
   }
 }
 
+function optionalStringOverride(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined
+  return value.trim() ? value : undefined
+}
+
+/** @internal Exported for testing. */
+export function mergeRunOverride(baseRun: JobRunSpec, override: JobRunSpec): JobRunSpec {
+  const merged: JobRunSpec = { ...baseRun }
+
+  const assignString = <K extends keyof Pick<JobRunSpec, "prompt" | "command" | "arguments" | "agent" | "model" | "variant" | "title" | "session" | "runFormat" | "attachUrl">>(key: K) => {
+    const value = optionalStringOverride(override[key] as string | undefined)
+    if (value !== undefined) {
+      ;(merged[key] as string | undefined) = value
+    }
+  }
+
+  assignString("prompt")
+  assignString("command")
+  assignString("arguments")
+  assignString("agent")
+  assignString("model")
+  assignString("variant")
+  assignString("title")
+  assignString("session")
+  assignString("runFormat")
+  assignString("attachUrl")
+
+  if (override.files !== undefined) merged.files = override.files
+  if (override.share !== undefined) merged.share = override.share
+  if (override.continue !== undefined) merged.continue = override.continue
+  if (override.port !== undefined && override.port > 0) merged.port = override.port
+
+  return merged
+}
+
 function sanitizeJob(job: Job): Job {
   const sanitized: Job = { ...job }
 
@@ -2100,17 +2137,19 @@ function normalizeJob(raw: unknown): Job | null {
   return sanitizeJob(job)
 }
 
-function findJobByName(
+/** @internal Exported for testing. */
+export function findJobByName(
   name: string,
-  options?: { scopeId?: string; allScopes?: boolean; includeLegacy?: boolean }
+  options?: { scopeId?: string; allScopes?: boolean; includeLegacy?: boolean; scopesRoot?: string }
 ): Job | null {
   const scopeId = options?.scopeId ?? currentScopeId()
+  const scopesRoot = options?.scopesRoot ?? SCOPES_DIR
   const slug = slugify(name)
 
-  let job = loadScopedJob(scopeId, slug) || loadScopedJob(scopeId, name)
+  let job = loadScopedJob(scopeId, slug, scopesRoot) || loadScopedJob(scopeId, name, scopesRoot)
 
   if (!job) {
-    const allJobs = loadAllScopedJobs(scopeId)
+    const allJobs = loadAllScopedJobs(scopeId, scopesRoot)
     job =
       allJobs.find(
         (j) =>
@@ -2121,8 +2160,8 @@ function findJobByName(
       ) || null
   }
 
-  if (!job && options?.allScopes) {
-    const allJobs = loadAllJobsAcrossScopes()
+  if (!job && options?.allScopes !== false) {
+    const allJobs = loadAllJobsAcrossScopes(scopesRoot)
     job =
       allJobs.find(
         (j) =>
@@ -2133,7 +2172,7 @@ function findJobByName(
       ) || null
   }
 
-  if (!job && options?.includeLegacy) {
+  if (!job && options?.includeLegacy !== false) {
     job = loadLegacyJob(slug) || loadLegacyJob(name)
     if (!job) {
       const allJobs = loadAllLegacyJobs()
@@ -2694,11 +2733,12 @@ export const SchedulerPlugin: Plugin = async () => {
                : backend === "cron"
                  ? "Cron note: missed runs during sleep are not replayed. For catch-up behavior, use launchd or systemd when available."
                  : "The job will run at the scheduled time. If your computer was asleep, it will catch up when it wakes."
-             const primaryLine = run.command
-               ? `Command: ${run.command}${run.arguments ? ` ${run.arguments}` : ""}`
-               : `Prompt: ${(run.prompt ?? "").slice(0, 100)}${(run.prompt ?? "").length > 100 ? "..." : ""}`
+              const primaryLine = run.command
+                ? `Command: ${run.command}${run.arguments ? ` ${run.arguments}` : ""}`
+                : `Prompt: ${(run.prompt ?? "").slice(0, 100)}${(run.prompt ?? "").length > 100 ? "..." : ""}`
+              const commandName = slug === args.name ? args.name : slug
 
-            const attachLine = run.attachUrl ? `Attach URL: ${run.attachUrl}
+             const attachLine = run.attachUrl ? `Attach URL: ${run.attachUrl}
 ` : ""
 
             return okResult(
@@ -2713,11 +2753,11 @@ ${attachLine}${primaryLine}
 ${reliabilityLine}
 
 Commands:
-- "run ${args.name} now" - run immediately
+- "run ${commandName} now" - run immediately
 - "show my jobs" - list all
-- "delete job ${args.name}" - remove`,
-              { job }
-            )
+- "delete job ${commandName}" - remove`,
+               { job }
+             )
 
           } catch (error) {
             deleteJobFile(job)
@@ -2988,23 +3028,22 @@ Commands:
             }
           })()
 
-          const nextRunCandidate: JobRunSpec = {
-            ...currentRun,
-            prompt: args.prompt !== undefined ? args.prompt : currentRun.prompt,
-            command: args.command !== undefined ? args.command : currentRun.command,
-            arguments: args.arguments !== undefined ? args.arguments : currentRun.arguments,
-            files: args.files !== undefined ? parseFiles(args.files) : currentRun.files,
-            agent: args.agent !== undefined ? args.agent : currentRun.agent,
-            model: args.model !== undefined ? args.model : currentRun.model,
-            variant: args.variant !== undefined ? args.variant : currentRun.variant,
-            title: args.title !== undefined ? args.title : currentRun.title,
-            share: args.share !== undefined ? args.share : currentRun.share,
-            continue: args.continue !== undefined ? args.continue : currentRun.continue,
-            session: args.session !== undefined ? args.session : currentRun.session,
-            runFormat: args.runFormat !== undefined ? parseRunFormatInput(args.runFormat) : currentRun.runFormat,
-            attachUrl: args.attachUrl !== undefined ? args.attachUrl : currentRun.attachUrl,
-            port: args.port !== undefined ? args.port : currentRun.port,
-          }
+          const nextRunCandidate = mergeRunOverride(currentRun, {
+            prompt: args.prompt,
+            command: args.command,
+            arguments: args.arguments,
+            files: args.files !== undefined ? parseFiles(args.files) : undefined,
+            agent: args.agent,
+            model: args.model,
+            variant: args.variant,
+            title: args.title,
+            share: args.share,
+            continue: args.continue,
+            session: args.session,
+            runFormat: args.runFormat !== undefined ? parseRunFormatInput(args.runFormat) : undefined,
+            attachUrl: args.attachUrl,
+            port: args.port,
+          })
 
           try {
             updates.run = normalizeRunSpec(nextRunCandidate)
@@ -3219,23 +3258,22 @@ Commands:
             }
           })()
 
-          const overrideCandidate: JobRunSpec = {
-            ...baseRun,
-            prompt: args.prompt !== undefined ? args.prompt : baseRun.prompt,
-            command: args.command !== undefined ? args.command : baseRun.command,
-            arguments: args.arguments !== undefined ? args.arguments : baseRun.arguments,
-            files: args.files !== undefined ? parseFiles(args.files) : baseRun.files,
-            agent: args.agent !== undefined ? args.agent : baseRun.agent,
-            model: args.model !== undefined ? args.model : baseRun.model,
-            variant: args.variant !== undefined ? args.variant : baseRun.variant,
-            title: args.title !== undefined ? args.title : baseRun.title,
-            share: args.share !== undefined ? args.share : baseRun.share,
-            continue: args.continue !== undefined ? args.continue : baseRun.continue,
-            session: args.session !== undefined ? args.session : baseRun.session,
-            runFormat: args.runFormat !== undefined ? parseRunFormatInput(args.runFormat) : baseRun.runFormat,
-            port: args.port !== undefined ? args.port : baseRun.port,
-            attachUrl: args.attachUrl !== undefined ? args.attachUrl : baseRun.attachUrl,
-          }
+          const overrideCandidate = mergeRunOverride(baseRun, {
+            prompt: args.prompt,
+            command: args.command,
+            arguments: args.arguments,
+            files: args.files !== undefined ? parseFiles(args.files) : undefined,
+            agent: args.agent,
+            model: args.model,
+            variant: args.variant,
+            title: args.title,
+            share: args.share,
+            continue: args.continue,
+            session: args.session,
+            runFormat: args.runFormat !== undefined ? parseRunFormatInput(args.runFormat) : undefined,
+            port: args.port,
+            attachUrl: args.attachUrl,
+          })
 
           let runOverride: JobRunSpec
           try {
