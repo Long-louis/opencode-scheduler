@@ -12,12 +12,26 @@ As of `v1.2.0`, jobs are scoped by `workdir` (so different projects don't collid
 
 ## Install
 
-Add to your `opencode.json`:
+**From npm (upstream):**
 
 ```json
 {
   "plugin": ["opencode-scheduler"]
 }
+```
+
+**From this fork (GitHub):**
+
+```json
+{
+  "plugin": ["opencode-scheduler@git+https://github.com/Long-louis/opencode-scheduler.git"]
+}
+```
+
+Or via the CLI:
+
+```bash
+opencode plugin "opencode-scheduler@git+https://github.com/Long-louis/opencode-scheduler.git" --global
 ```
 
 ## Examples
